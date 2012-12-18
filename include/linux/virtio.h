@@ -7,6 +7,7 @@
 #include <linux/spinlock.h>
 #include <linux/device.h>
 #include <linux/mod_devicetable.h>
+#include <linux/dma-direction.h>
 #include <linux/gfp.h>
 
 /**
@@ -39,6 +40,26 @@ int virtqueue_add_buf(struct virtqueue *vq,
 		      unsigned int in_num,
 		      void *data,
 		      gfp_t gfp);
+
+struct virtqueue_buf {
+	struct virtqueue *vq;
+	struct vring_desc *indirect, *tail;
+	int head;
+};
+
+int virtqueue_start_buf(struct virtqueue *_vq,
+			struct virtqueue_buf *buf,
+			void *data,
+			unsigned int count,
+			unsigned int count_sg,
+			gfp_t gfp);
+
+void virtqueue_add_sg(struct virtqueue_buf *buf,
+		      struct scatterlist sgl[],
+		      unsigned int count,
+		      enum dma_data_direction dir);
+
+void virtqueue_end_buf(struct virtqueue_buf *buf);
 
 void virtqueue_kick(struct virtqueue *vq);
 
