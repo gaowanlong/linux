@@ -259,6 +259,7 @@ p9_virtio_request(struct p9_client *client, struct p9_req_t *req)
 	int in, out;
 	unsigned long flags;
 	struct virtio_chan *chan = client->trans;
+	struct scatterlist *outsg = NULL, *insg = NULL;
 
 	p9_debug(P9_DEBUG_TRANS, "9p debug: virtio request\n");
 
@@ -269,12 +270,21 @@ req_retry:
 	/* Handle out VirtIO ring buffers */
 	out = pack_sg_list(chan->sg, 0,
 			   VIRTQUEUE_NUM, req->tc->sdata, req->tc->size);
+	if (out) {
+		sg_unset_end_markers(chan->sg, out - 1);
+		sg_mark_end(&chan->sg[out - 1]);
+		outsg = chan->sg;
+	}
 
 	in = pack_sg_list(chan->sg, out,
 			  VIRTQUEUE_NUM, req->rc->sdata, req->rc->capacity);
+	if (in) {
+		sg_unset_end_markers(chan->sg + out, in - 1);
+		sg_mark_end(&chan->sg[out + in - 1]);
+		insg = chan->sg + out;
+	}
 
-	err = virtqueue_add_buf(chan->vq, chan->sg, out, in, req->tc,
-				GFP_ATOMIC);
+	err = virtqueue_add_buf(chan->vq, outsg, insg, req->tc, GFP_ATOMIC);
 	if (err < 0) {
 		if (err == -ENOSPC) {
 			chan->ring_bufs_avail = 0;
@@ -356,6 +366,7 @@ p9_virtio_zc_request(struct p9_client *client, struct p9_req_t *req,
 	int in_nr_pages = 0, out_nr_pages = 0;
 	struct page **in_pages = NULL, **out_pages = NULL;
 	struct virtio_chan *chan = client->trans;
+	struct scatterlist *insg = NULL, *outsg = NULL;
 
 	p9_debug(P9_DEBUG_TRANS, "virtio request\n");
 
@@ -403,6 +414,13 @@ req_retry_pinned:
 	if (out_pages)
 		out += pack_sg_list_p(chan->sg, out, VIRTQUEUE_NUM,
 				      out_pages, out_nr_pages, uodata, outlen);
+
+	if (out) {
+		sg_unset_end_markers(chan->sg, out - 1);
+		sg_mark_end(&chan->sg[out - 1]);
+		outsg = chan->sg;
+	}
+
 	/*
 	 * Take care of in data
 	 * For example TREAD have 11.
@@ -416,8 +434,13 @@ req_retry_pinned:
 		in += pack_sg_list_p(chan->sg, out + in, VIRTQUEUE_NUM,
 				     in_pages, in_nr_pages, uidata, inlen);
 
-	err = virtqueue_add_buf(chan->vq, chan->sg, out, in, req->tc,
-				GFP_ATOMIC);
+	if (in) {
+		sg_unset_end_markers(chan->sg + out, in - 1);
+		sg_mark_end(&chan->sg[out + in - 1]);
+		insg = chan->sg + out;
+	}
+
+	err = virtqueue_add_buf(chan->vq, outsg, insg, req->tc, GFP_ATOMIC);
 	if (err < 0) {
 		if (err == -ENOSPC) {
 			chan->ring_bufs_avail = 0;

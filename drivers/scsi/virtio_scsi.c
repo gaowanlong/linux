@@ -223,7 +223,7 @@ static int virtscsi_kick_event(struct virtio_scsi *vscsi,
 
 	spin_lock_irqsave(&vscsi->event_vq.vq_lock, flags);
 
-	err = virtqueue_add_buf(vscsi->event_vq.vq, &sg, 0, 1, event_node,
+	err = virtqueue_add_buf(vscsi->event_vq.vq, NULL, &sg, event_node,
 				GFP_ATOMIC);
 	if (!err)
 		virtqueue_kick(vscsi->event_vq.vq);
@@ -369,8 +369,8 @@ static void virtscsi_map_sgl(struct scatterlist *sg, unsigned int *p_idx,
  * virtscsi_map_cmd - map a scsi_cmd to a virtqueue scatterlist
  * @vscsi	: virtio_scsi state
  * @cmd		: command structure
- * @out_num	: number of read-only elements
- * @in_num	: number of write-only elements
+ * @out		: number of read-only elements
+ * @in		: number of write-only elements
  * @req_size	: size of the request buffer
  * @resp_size	: size of the response buffer
  *
@@ -378,7 +378,7 @@ static void virtscsi_map_sgl(struct scatterlist *sg, unsigned int *p_idx,
  */
 static void virtscsi_map_cmd(struct virtio_scsi_target_state *tgt,
 			     struct virtio_scsi_cmd *cmd,
-			     unsigned *out_num, unsigned *in_num,
+			     unsigned *out, unsigned *in,
 			     size_t req_size, size_t resp_size)
 {
 	struct scsi_cmnd *sc = cmd->sc;
@@ -392,7 +392,7 @@ static void virtscsi_map_cmd(struct virtio_scsi_target_state *tgt,
 	if (sc && sc->sc_data_direction != DMA_FROM_DEVICE)
 		virtscsi_map_sgl(sg, &idx, scsi_out(sc));
 
-	*out_num = idx;
+	*out = idx;
 
 	/* Response header.  */
 	sg_set_buf(&sg[idx++], &cmd->resp, resp_size);
@@ -401,7 +401,11 @@ static void virtscsi_map_cmd(struct virtio_scsi_target_state *tgt,
 	if (sc && sc->sc_data_direction != DMA_TO_DEVICE)
 		virtscsi_map_sgl(sg, &idx, scsi_in(sc));
 
-	*in_num = idx - *out_num;
+	*in = idx - *out;
+
+	sg_unset_end_markers(sg, *out + *in);
+	sg_mark_end(&sg[*out - 1]);
+	sg_mark_end(&sg[*out + *in - 1]);
 }
 
 static int virtscsi_kick_cmd(struct virtio_scsi_target_state *tgt,
@@ -409,16 +413,16 @@ static int virtscsi_kick_cmd(struct virtio_scsi_target_state *tgt,
 			     struct virtio_scsi_cmd *cmd,
 			     size_t req_size, size_t resp_size, gfp_t gfp)
 {
-	unsigned int out_num, in_num;
+	unsigned int out, in;
 	unsigned long flags;
 	int err;
 	bool needs_kick = false;
 
 	spin_lock_irqsave(&tgt->tgt_lock, flags);
-	virtscsi_map_cmd(tgt, cmd, &out_num, &in_num, req_size, resp_size);
+	virtscsi_map_cmd(tgt, cmd, &out, &in, req_size, resp_size);
 
 	spin_lock(&vq->vq_lock);
-	err = virtqueue_add_buf(vq->vq, tgt->sg, out_num, in_num, cmd, gfp);
+	err = virtqueue_add_buf(vq->vq, tgt->sg, tgt->sg + out, cmd, gfp);
 	spin_unlock(&tgt->tgt_lock);
 	if (!err)
 		needs_kick = virtqueue_kick_prepare(vq->vq);

@@ -33,10 +33,18 @@ struct virtqueue {
 	void *priv;
 };
 
+static inline void sg_unset_end_markers(struct scatterlist *sg,
+					unsigned int num)
+{
+	unsigned int i;
+
+	for (i = 0; i < num; i++)
+		sg[i].page_link &= ~0x02;
+}
+
 int virtqueue_add_buf(struct virtqueue *vq,
-		      struct scatterlist sg[],
-		      unsigned int out_num,
-		      unsigned int in_num,
+		      struct scatterlist *out,
+		      struct scatterlist *in,
 		      void *data,
 		      gfp_t gfp);
 

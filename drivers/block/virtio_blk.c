@@ -102,8 +102,8 @@ static inline struct virtblk_req *virtblk_alloc_req(struct virtio_blk *vblk,
 
 static void virtblk_add_buf_wait(struct virtio_blk *vblk,
 				 struct virtblk_req *vbr,
-				 unsigned long out,
-				 unsigned long in)
+				 struct scatterlist *out,
+				 struct scatterlist *in)
 {
 	DEFINE_WAIT(wait);
 
@@ -112,7 +112,7 @@ static void virtblk_add_buf_wait(struct virtio_blk *vblk,
 					  TASK_UNINTERRUPTIBLE);
 
 		spin_lock_irq(vblk->disk->queue->queue_lock);
-		if (virtqueue_add_buf(vblk->vq, vbr->sg, out, in, vbr,
+		if (virtqueue_add_buf(vblk->vq, out, in, vbr,
 				      GFP_ATOMIC) < 0) {
 			spin_unlock_irq(vblk->disk->queue->queue_lock);
 			io_schedule();
@@ -128,12 +128,13 @@ static void virtblk_add_buf_wait(struct virtio_blk *vblk,
 }
 
 static inline void virtblk_add_req(struct virtblk_req *vbr,
-				   unsigned int out, unsigned int in)
+				   struct scatterlist *out,
+				   struct scatterlist *in)
 {
 	struct virtio_blk *vblk = vbr->vblk;
 
 	spin_lock_irq(vblk->disk->queue->queue_lock);
-	if (unlikely(virtqueue_add_buf(vblk->vq, vbr->sg, out, in, vbr,
+	if (unlikely(virtqueue_add_buf(vblk->vq, out, in, vbr,
 					GFP_ATOMIC) < 0)) {
 		spin_unlock_irq(vblk->disk->queue->queue_lock);
 		virtblk_add_buf_wait(vblk, vbr, out, in);
@@ -154,7 +155,11 @@ static int virtblk_bio_send_flush(struct virtblk_req *vbr)
 	sg_set_buf(&vbr->sg[out++], &vbr->out_hdr, sizeof(vbr->out_hdr));
 	sg_set_buf(&vbr->sg[out + in++], &vbr->status, sizeof(vbr->status));
 
-	virtblk_add_req(vbr, out, in);
+	sg_unset_end_markers(vbr->sg, out + in);
+	sg_mark_end(&vbr->sg[out - 1]);
+	sg_mark_end(&vbr->sg[out + in - 1]);
+
+	virtblk_add_req(vbr, vbr->sg, vbr->sg + out);
 
 	return 0;
 }
@@ -174,9 +179,6 @@ static int virtblk_bio_send_data(struct virtblk_req *vbr)
 
 	num = blk_bio_map_sg(vblk->disk->queue, bio, vbr->sg + out);
 
-	sg_set_buf(&vbr->sg[num + out + in++], &vbr->status,
-		   sizeof(vbr->status));
-
 	if (num) {
 		if (bio->bi_rw & REQ_WRITE) {
 			vbr->out_hdr.type |= VIRTIO_BLK_T_OUT;
@@ -187,7 +189,13 @@ static int virtblk_bio_send_data(struct virtblk_req *vbr)
 		}
 	}
 
-	virtblk_add_req(vbr, out, in);
+	sg_set_buf(&vbr->sg[out + in++], &vbr->status, sizeof(vbr->status));
+
+	sg_unset_end_markers(vbr->sg, out + in);
+	sg_mark_end(&vbr->sg[out - 1]);
+	sg_mark_end(&vbr->sg[out + in - 1]);
+
+	virtblk_add_req(vbr, vbr->sg, vbr->sg + out);
 
 	return 0;
 }
@@ -335,6 +343,7 @@ static bool do_req(struct request_queue *q, struct virtio_blk *vblk,
 		}
 	}
 
+	/* We layout out scatterlist in a single array, out then in. */
 	sg_set_buf(&vblk->sg[out++], &vbr->out_hdr, sizeof(vbr->out_hdr));
 
 	/*
@@ -346,16 +355,8 @@ static bool do_req(struct request_queue *q, struct virtio_blk *vblk,
 	if (vbr->req->cmd_type == REQ_TYPE_BLOCK_PC)
 		sg_set_buf(&vblk->sg[out++], vbr->req->cmd, vbr->req->cmd_len);
 
+	/* This marks the end of the sg list at vblk->sg[out]. */
 	num = blk_rq_map_sg(q, vbr->req, vblk->sg + out);
-
-	if (vbr->req->cmd_type == REQ_TYPE_BLOCK_PC) {
-		sg_set_buf(&vblk->sg[num + out + in++], vbr->req->sense, SCSI_SENSE_BUFFERSIZE);
-		sg_set_buf(&vblk->sg[num + out + in++], &vbr->in_hdr,
-			   sizeof(vbr->in_hdr));
-	}
-
-	sg_set_buf(&vblk->sg[num + out + in++], &vbr->status,
-		   sizeof(vbr->status));
 
 	if (num) {
 		if (rq_data_dir(vbr->req) == WRITE) {
@@ -367,8 +368,22 @@ static bool do_req(struct request_queue *q, struct virtio_blk *vblk,
 		}
 	}
 
-	if (virtqueue_add_buf(vblk->vq, vblk->sg, out, in, vbr,
-			      GFP_ATOMIC) < 0) {
+	if (vbr->req->cmd_type == REQ_TYPE_BLOCK_PC) {
+		sg_set_buf(&vblk->sg[out + in++], vbr->req->sense,
+			   SCSI_SENSE_BUFFERSIZE);
+		sg_set_buf(&vblk->sg[out + in++], &vbr->in_hdr,
+			   sizeof(vbr->in_hdr));
+	}
+
+	sg_set_buf(&vblk->sg[out + in++], &vbr->status,
+		   sizeof(vbr->status));
+
+	sg_unset_end_markers(vblk->sg, out + in);
+	sg_mark_end(&vblk->sg[out - 1]);
+	sg_mark_end(&vblk->sg[out + in - 1]);
+
+	if (virtqueue_add_buf(vblk->vq, vblk->sg, vblk->sg + out, vbr, GFP_ATOMIC)
+	    < 0) {
 		mempool_free(vbr, vblk->pool);
 		return false;
 	}
