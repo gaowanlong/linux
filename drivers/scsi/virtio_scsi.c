@@ -106,6 +106,9 @@ struct virtio_scsi {
 
 	u32 num_queues;
 
+	/* Does the affinity hint is set for virtqueues? */
+	bool affinity_hint_set;
+
 	struct virtio_scsi_vq ctrl_vq;
 	struct virtio_scsi_vq event_vq;
 	struct virtio_scsi_vq req_vqs[];
@@ -701,14 +704,45 @@ static struct scsi_host_template virtscsi_host_template_multi = {
 				  &__val, sizeof(__val)); \
 	})
 
+static void virtscsi_set_affinity(struct virtio_scsi *vscsi, bool affinity)
+{
+	int i;
+	int cpu;
+
+	/* In multiqueue mode, when the number of cpu is equal
+	 * to the number of request queues, we let the qeueues
+	 * to be private to one cpu by setting the affinity hint
+	 * to eliminate the contention.
+	 */
+	if ((vscsi->num_queues == 1 ||
+	     vscsi->num_queues != num_online_cpus()) && affinity) {
+		if (vscsi->affinity_hint_set)
+			affinity = false;
+		else
+			return;
+	}
+
+	if (affinity) {
+		i = 0;
+		for_each_online_cpu(cpu) {
+			virtqueue_set_affinity(vscsi->req_vqs[i].vq, cpu);
+			i++;
+		}
+
+		vscsi->affinity_hint_set = true;
+	} else {
+		for (i = 0; i < vscsi->num_queues - VIRTIO_SCSI_VQ_BASE; i++)
+			virtqueue_set_affinity(vscsi->req_vqs[i].vq, -1);
+
+		vscsi->affinity_hint_set = false;
+	}
+}
 
 static void virtscsi_init_vq(struct virtio_scsi_vq *virtscsi_vq,
-			     struct virtqueue *vq, bool affinity)
+			     struct virtqueue *vq)
 {
 	spin_lock_init(&virtscsi_vq->vq_lock);
 	virtscsi_vq->vq = vq;
-	if (affinity)
-		virtqueue_set_affinity(vq, vq->index - VIRTIO_SCSI_VQ_BASE);
 }
 
 static void virtscsi_init_tgt(struct virtio_scsi *vscsi, int i)
@@ -735,6 +769,8 @@ static void virtscsi_remove_vqs(struct virtio_device *vdev)
 {
 	struct Scsi_Host *sh = virtio_scsi_host(vdev);
 	struct virtio_scsi *vscsi = shost_priv(sh);
+
+	virtscsi_set_affinity(vscsi, false);
 
 	/* Stop all the virtqueues. */
 	vdev->config->reset(vdev);
@@ -779,11 +815,13 @@ static int virtscsi_init(struct virtio_device *vdev,
 	if (err)
 		return err;
 
-	virtscsi_init_vq(&vscsi->ctrl_vq, vqs[0], false);
-	virtscsi_init_vq(&vscsi->event_vq, vqs[1], false);
+	virtscsi_init_vq(&vscsi->ctrl_vq, vqs[0]);
+	virtscsi_init_vq(&vscsi->event_vq, vqs[1]);
 	for (i = VIRTIO_SCSI_VQ_BASE; i < num_vqs; i++)
 		virtscsi_init_vq(&vscsi->req_vqs[i - VIRTIO_SCSI_VQ_BASE],
-				 vqs[i], vscsi->num_queues > 1);
+				 vqs[i]);
+
+	virtscsi_set_affinity(vscsi, true);
 
 	virtscsi_config_set(vdev, cdb_size, VIRTIO_SCSI_CDB_SIZE);
 	virtscsi_config_set(vdev, sense_size, VIRTIO_SCSI_SENSE_SIZE);
