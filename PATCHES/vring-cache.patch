@@ -1,0 +1,130 @@
+RFC: Try an indirect_cache (Untested)
+
+Signed-off-by: Rusty Russell <rusty@rustcorp.com.au>
+
+diff --git a/drivers/virtio/virtio_ring.c b/drivers/virtio/virtio_ring.c
+index ffd7e7d..e82821a 100644
+--- a/drivers/virtio/virtio_ring.c
++++ b/drivers/virtio/virtio_ring.c
+@@ -74,6 +74,11 @@
+ #define END_USE(vq)
+ #endif
+ 
++struct indirect_cache {
++	unsigned int max;
++	struct vring_desc *cache;
++};
++
+ struct vring_virtqueue
+ {
+ 	struct virtqueue vq;
+@@ -114,11 +119,21 @@ struct vring_virtqueue
+ #endif
+ 
+ 	/* Tokens for callbacks. */
+-	void *data[];
++	void *data[ /* vring.num */ ];
++
++	/*
++	 * Followed by:
++	 *	struct indirect_cache indirect[vring.num];
++	 */
+ };
+ 
+ #define to_vvq(_vq) container_of(_vq, struct vring_virtqueue, vq)
+ 
++static inline struct indirect_cache *indirect_cache(struct vring_virtqueue *vq)
++{
++	return (struct indirect_cache *)&vq->data[vq->vring.num];
++}
++
+ /* Set up an indirect table of descriptors and add it to the queue. */
+ static int vring_add_indirect(struct vring_virtqueue *vq,
+ 			      struct scatterlist sg[],
+@@ -129,6 +144,7 @@ static int vring_add_indirect(struct vring_virtqueue *vq,
+ 	struct vring_desc *desc;
+ 	unsigned head;
+ 	int i;
++	struct indirect_cache *ic;
+ 
+ 	/*
+ 	 * We require lowmem mappings for the descriptors because
+@@ -137,9 +153,17 @@ static int vring_add_indirect(struct vring_virtqueue *vq,
+ 	 */
+ 	gfp &= ~(__GFP_HIGHMEM | __GFP_HIGH);
+ 
+-	desc = kmalloc((out + in) * sizeof(struct vring_desc), gfp);
+-	if (!desc)
+-		return -ENOMEM;
++	head = vq->free_head;
++	ic = &indirect_cache(vq)[head];
++	if (unlikely(ic->max < out + in)) {
++		desc = kmalloc((out + in) * sizeof(struct vring_desc), gfp);
++		if (!desc)
++			return -ENOMEM;
++		kfree(ic->cache);
++		ic->max = out + in;
++		ic->cache = desc;
++	} else
++		desc = ic->cache;
+ 
+ 	/* Transfer entries from the sg list into the indirect page */
+ 	for (i = 0; i < out; i++) {
+@@ -165,7 +189,6 @@ static int vring_add_indirect(struct vring_virtqueue *vq,
+ 	vq->vq.num_free--;
+ 
+ 	/* Use a single buffer which doesn't continue */
+-	head = vq->free_head;
+ 	vq->vring.desc[head].flags = VRING_DESC_F_INDIRECT;
+ 	vq->vring.desc[head].addr = virt_to_phys(desc);
+ 	vq->vring.desc[head].len = i * sizeof(struct vring_desc);
+@@ -630,6 +653,8 @@ struct virtqueue *vring_new_virtqueue(unsigned int index,
+ {
+ 	struct vring_virtqueue *vq;
+ 	unsigned int i;
++	bool indirect;
++	size_t len;
+ 
+ 	/* We assume num is a power of 2. */
+ 	if (num & (num - 1)) {
+@@ -637,7 +662,12 @@ struct virtqueue *vring_new_virtqueue(unsigned int index,
+ 		return NULL;
+ 	}
+ 
+-	vq = kmalloc(sizeof(*vq) + sizeof(void *)*num, GFP_KERNEL);
++	indirect = virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC);
++	len = sizeof(*vq) + sizeof(void *) * num;
++	if (indirect)
++		len += sizeof(struct indirect_cache *) * num;
++
++	vq = kmalloc(len, GFP_KERNEL);
+ 	if (!vq)
+ 		return NULL;
+ 
+@@ -658,7 +688,7 @@ struct virtqueue *vring_new_virtqueue(unsigned int index,
+ 	vq->last_add_time_valid = false;
+ #endif
+ 
+-	vq->indirect = virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC);
++	vq->indirect = indirect;
+ 	vq->event = virtio_has_feature(vdev, VIRTIO_RING_F_EVENT_IDX);
+ 
+ 	/* No callback?  Tell other side not to bother us. */
+@@ -670,9 +700,16 @@ struct virtqueue *vring_new_virtqueue(unsigned int index,
+ 	for (i = 0; i < num-1; i++) {
+ 		vq->vring.desc[i].next = i+1;
+ 		vq->data[i] = NULL;
++		if (indirect) {
++			indirect_cache(vq)[i].max = 0;
++			indirect_cache(vq)[i].cache = NULL;
++		}
+ 	}
+ 	vq->data[i] = NULL;
+-
++	if (indirect) {
++		indirect_cache(vq)[i].max = 0;
++		indirect_cache(vq)[i].cache = NULL;
++	}
+ 	return &vq->vq;
+ }
+ EXPORT_SYMBOL_GPL(vring_new_virtqueue);

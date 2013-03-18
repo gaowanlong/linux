@@ -1,0 +1,16 @@
+diff --git a/tools/lguest/lguest.c b/tools/lguest/lguest.c
+index d20179b..3d3a00e 100644
+--- a/tools/lguest/lguest.c
++++ b/tools/lguest/lguest.c
+@@ -1529,6 +1529,11 @@ static void setup_tun_net(char *arg)
+ 	add_feature(dev, VIRTIO_NET_F_HOST_ECN);
+ 	/* We handle indirect ring entries */
+ 	add_feature(dev, VIRTIO_RING_F_INDIRECT_DESC);
++#ifndef VIRTIO_NET_F_ANY_HEADER_SG
++#define VIRTIO_NET_F_ANY_HEADER_SG 22
++#endif
++	add_feature(dev, VIRTIO_NET_F_ANY_HEADER_SG);
++
+ 	set_config(dev, sizeof(conf), &conf);
+ 
+ 	/* We don't need the socket any more; setup is done. */

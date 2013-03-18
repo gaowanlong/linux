@@ -1,0 +1,40 @@
+diff --git a/drivers/net/virtio_net.c b/drivers/net/virtio_net.c
+index 4e6098a..f84d317 100644
+--- a/drivers/net/virtio_net.c
++++ b/drivers/net/virtio_net.c
+@@ -585,7 +585,7 @@ static int xmit_skb(struct virtnet_info *vi, struct sk_buff *skb)
+ 	unsigned num_sg;
+ 	unsigned hdr_len;
+ 	bool can_push;
+-
++	static unsigned long num_can, num_cant, bad_align, bad_clone, bad_headroom;
+ 
+ 	pr_debug("%s: xmit %p %pM\n", vi->dev->name, skb, dest);
+ 	if (vi->mergeable_rx_bufs)
+@@ -598,10 +598,24 @@ static int xmit_skb(struct virtnet_info *vi, struct sk_buff *skb)
+ 		!skb_header_cloned(skb) && skb_headroom(skb) >= hdr_len;
+ 	/* Even if we can, don't push here yet as this would skew
+ 	 * csum_start offset below. */
+-	if (can_push)
++	if (can_push) {
++		num_can++;
+ 		hdr = (struct skb_vnet_hdr *)(skb->data - hdr_len);
+-	else
++	} else {
++		num_cant++;
++		if ((unsigned long)skb->data & (__alignof__(*hdr) - 1))
++			bad_align++;
++		if (skb_header_cloned(skb))
++			bad_clone++;
++		if (skb_headroom(skb) < hdr_len)
++			bad_headroom++;
+ 		hdr = skb_vnet_hdr(skb);
++	}
++
++	if ((num_can + num_cant) % 1024 == 0)
++		printk("%s: %lu can %lu cant (a=%u c=%u h=%u)\n",
++		       vi->dev->name, num_can, num_cant,
++		       bad_align, bad_clone, bad_headroom);
+ 
+ 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+ 		hdr->hdr.flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
