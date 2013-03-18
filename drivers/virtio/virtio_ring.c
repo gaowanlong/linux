@@ -296,37 +296,6 @@ add_head:
 }
 
 /**
- * virtqueue_add_buf - expose buffer to other end
- * @vq: the struct virtqueue we're talking about.
- * @sg: the description of the buffer(s).
- * @out_num: the number of sg readable by other side
- * @in_num: the number of sg which are writable (after readable ones)
- * @data: the token identifying the buffer.
- * @gfp: how to do memory allocations (if necessary).
- *
- * Caller must ensure we don't call this with other virtqueue operations
- * at the same time (except where noted).
- *
- * Returns zero or a negative error (ie. ENOSPC, ENOMEM).
- */
-int virtqueue_add_buf(struct virtqueue *_vq,
-		      struct scatterlist sg[],
-		      unsigned int out,
-		      unsigned int in,
-		      void *data,
-		      gfp_t gfp)
-{
-	struct scatterlist *sgs[2];
-
-	sgs[0] = sg;
-	sgs[1] = sg + out;
-
-	return virtqueue_add(_vq, sgs, sg_next_arr,
-			     out, in, out ? 1 : 0, in ? 1 : 0, data, gfp);
-}
-EXPORT_SYMBOL_GPL(virtqueue_add_buf);
-
-/**
  * virtqueue_add_sgs - expose buffers to other end
  * @vq: the struct virtqueue we're talking about.
  * @sgs: array of terminated scatterlists.
