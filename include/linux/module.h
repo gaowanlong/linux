@@ -186,6 +186,9 @@ struct notifier_block;
 
 #ifdef CONFIG_MODULES
 
+/* In generated file kernel/modnamelist.c */
+extern const char *builtin_modnames[];
+
 extern int modules_disabled; /* for sysctl */
 /* Get/put a kernel symbol (calls must be symmetric) */
 void *__symbol_get(const char *symbol);

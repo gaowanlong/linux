@@ -10,7 +10,7 @@ obj-y     = fork.o exec_domain.o panic.o printk.o \
 	    kthread.o wait.o sys_ni.o posix-cpu-timers.o mutex.o \
 	    hrtimer.o rwsem.o nsproxy.o srcu.o semaphore.o \
 	    notifier.o ksysfs.o cred.o \
-	    async.o range.o groups.o lglock.o smpboot.o
+	    async.o range.o groups.o lglock.o smpboot.o modnamelist.o
 
 ifdef CONFIG_FUNCTION_TRACER
 # Do not trace debug files and internal ftrace files
@@ -138,6 +138,13 @@ quiet_cmd_bc  = BC      $@
 targets += timeconst.h
 $(obj)/timeconst.h: $(obj)/hz.bc $(src)/timeconst.bc FORCE
 	$(call if_changed,bc)
+
+quiet_cmd_modnamelist  = MODNAMELIST      $@
+      cmd_modnamelist  = sh scripts/modnamelist.sh $@ $(src)/modules.builtin
+
+# Must match name-fix in scripts/Makefile.lib!
+kernel/modnamelist.c: modules.builtin FORCE
+	$(call if_changed,modnamelist)
 
 ifeq ($(CONFIG_MODULE_SIG),y)
 #

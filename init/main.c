@@ -245,12 +245,25 @@ static int __init repair_env_string(char *param, char *val, const char *unused)
 	return 0;
 }
 
+static bool builtin_modname(const char *name, size_t len)
+{
+	const char **n;
+
+	for (n = builtin_modnames; *n; n++) {
+		if (strncmp(name, *n, len) == 0 && !(*n)[len])
+			return true;
+	}
+	return false;
+}
+
 /*
  * Unknown boot options get handed to init, unless they look like
  * unused parameters (modprobe will find them in /proc/cmdline).
  */
 static int __init unknown_bootoption(char *param, char *val, const char *unused)
 {
+	size_t modname_len = strcspn(param, ".");
+
 	repair_env_string(param, val, unused);
 
 	/* Handle obsolete-style parameters */
@@ -258,8 +271,13 @@ static int __init unknown_bootoption(char *param, char *val, const char *unused)
 		return 0;
 
 	/* Unused module parameter. */
-	if (strchr(param, '.') && (!val || strchr(param, '.') < val))
+	if (param[modname_len] == '.') {
+		if (builtin_modname(param, modname_len)) {
+			printk(KERN_ERR "Unknown kernel parameter %s\n", param);
+			return -EINVAL;
+		}
 		return 0;
+	}
 
 	if (panic_later)
 		return 0;
