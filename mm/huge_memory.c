@@ -21,6 +21,7 @@
 #include <linux/pagemap.h>
 #include <linux/migrate.h>
 #include <linux/hashtable.h>
+#include <uapi/linux/mincore.h>
 
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
@@ -1390,12 +1391,17 @@ int mincore_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
 	int ret = 0;
 
 	if (__pmd_trans_huge_lock(pmd, vma) == 1) {
+		struct page *page = pmd_page(*pmd);
+		unsigned char flags;
 		/*
 		 * All logical pages in the range are present
 		 * if backed by a huge page.
 		 */
+		flags = MINCORE_INCORE;
+		if (PageDirty(page))
+			flags |= MINCORE_DIRTY;
 		spin_unlock(&vma->vm_mm->page_table_lock);
-		memset(vec, 1, (end - addr) >> PAGE_SHIFT);
+		memset(vec, flags, (end - addr) >> PAGE_SHIFT);
 		ret = 1;
 	}
 

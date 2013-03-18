@@ -15,6 +15,7 @@
 #include <linux/swap.h>
 #include <linux/swapops.h>
 #include <linux/hugetlb.h>
+#include <uapi/linux/mincore.h>
 
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
@@ -28,7 +29,7 @@ static void mincore_hugetlb_page_range(struct vm_area_struct *vma,
 
 	h = hstate_vma(vma);
 	while (1) {
-		unsigned char present;
+		unsigned char flags = 0;
 		pte_t *ptep;
 		/*
 		 * Huge pages are always in RAM for now, but
@@ -36,9 +37,17 @@ static void mincore_hugetlb_page_range(struct vm_area_struct *vma,
 		 */
 		ptep = huge_pte_offset(current->mm,
 				       addr & huge_page_mask(h));
-		present = ptep && !huge_pte_none(huge_ptep_get(ptep));
+		if (ptep) {
+			pte_t pte = huge_ptep_get(ptep);
+
+			if (!huge_pte_none(pte)) {
+				flags = MINCORE_INCORE;
+				if (pte_dirty(pte))
+				    flags |= MINCORE_DIRTY;
+			}
+		}
 		while (1) {
-			*vec = present;
+			*vec = flags;
 			vec++;
 			addr += PAGE_SIZE;
 			if (addr == end)
@@ -61,7 +70,7 @@ static void mincore_hugetlb_page_range(struct vm_area_struct *vma,
  */
 static unsigned char mincore_page(struct address_space *mapping, pgoff_t pgoff)
 {
-	unsigned char present = 0;
+	unsigned char flags = 0;
 	struct page *page;
 
 	/*
@@ -79,11 +88,15 @@ static unsigned char mincore_page(struct address_space *mapping, pgoff_t pgoff)
 	}
 #endif
 	if (page) {
-		present = PageUptodate(page);
+		if (PageUptodate(page)) {
+			flags = MINCORE_INCORE;
+			if (PageDirty(page))
+				flags |= MINCORE_DIRTY;
+		}
 		page_cache_release(page);
 	}
 
-	return present;
+	return flags;
 }
 
 static void mincore_unmapped_range(struct vm_area_struct *vma,
@@ -121,9 +134,11 @@ static void mincore_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 		next = addr + PAGE_SIZE;
 		if (pte_none(pte))
 			mincore_unmapped_range(vma, addr, next, vec);
-		else if (pte_present(pte))
-			*vec = 1;
-		else if (pte_file(pte)) {
+		else if (pte_present(pte)) {
+			*vec = MINCORE_INCORE;
+			if (pte_dirty(pte))
+				*vec |= MINCORE_DIRTY;
+		} else if (pte_file(pte)) {
 			pgoff = pte_to_pgoff(pte);
 			*vec = mincore_page(vma->vm_file->f_mapping, pgoff);
 		} else { /* pte is a swap entry */
@@ -131,7 +146,9 @@ static void mincore_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 
 			if (is_migration_entry(entry)) {
 				/* migration entries are always uptodate */
-				*vec = 1;
+				*vec = MINCORE_INCORE;
+				if (PageDirty(migration_entry_to_page(entry)))
+					*vec |= MINCORE_DIRTY;
 			} else {
 #ifdef CONFIG_SWAP
 				pgoff = entry.val;
@@ -139,7 +156,7 @@ static void mincore_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 					pgoff);
 #else
 				WARN_ON(1);
-				*vec = 1;
+				*vec = MINCORE_INCORE|MINCORE_DIRTY;
 #endif
 			}
 		}
@@ -247,7 +264,7 @@ static long do_mincore(unsigned long addr, unsigned long pages, unsigned char *v
  * current process's address space specified by [addr, addr + len).
  * The status is returned in a vector of bytes.  The least significant
  * bit of each byte is 1 if the referenced page is in memory, otherwise
- * it is zero.
+ * it is zero.  The second bit indicates if page (may be) dirty.
  *
  * Because the status of a page can change after mincore() checks it
  * but before it returns to the application, the returned vector may
